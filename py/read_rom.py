@@ -6,20 +6,89 @@ import config
 import argparse
 
 
-parser = argparse.ArgumentParser(description='N64 dumper')
-parser.add_argument('mbits',metavar='N',type=int, help='ROM size in Mbits')
-args = parser.parse_args()
-
-baseAddr = 0x10000000
 
 def single_read(serial,addr):
     serial.write (("SR%08X" %( addr&0xffffffff )).encode())
     return int(serial.read(4).decode(),16)
+def getROMSize(serial):
+    readbeat=32
+    rddata=[[0 for i in range(readbeat)] for j in range(16)]
+ 
+    rom_cap=512
+    for itr in range(0,16):
+        # address block is 32Mbits
+        addr = 0x400000 * itr
+
+        # dummy read
+        single_read(serial,baseAddr+addr);
+
+        is_readdata_address=1;
+        for beat in range(0,readbeat):
+            rddata[itr][beat] = single_read(serial,baseAddr+addr+beat*2);
+            #print("%08X:%04X"%(baseAddr+addr+beat*2,rddata[itr][beat]))
+            if (rddata[itr][beat]!=2*beat):
+                is_readdata_address=0
+        if(is_readdata_address):
+            rom_cap=addr/0x20000;
+            #print("Detect data as address")
+            break
+
+    # block 0 mirror
+    if (rom_cap==512):
+        for i_block in range(1,16):
+            is_match=1
+            for beat in range(0,readbeat):
+                if(rddata[0][beat]!=rddata[i_block][beat]):
+                    is_match=0
+            if (is_match==1):
+                rom_cap = i_block*32
+                #print("Detect wrapped data")
+                break
+    # block 8 mirror (after 256MBits)
+    if (rom_cap==512):
+        for i_block in range(9,16):
+            is_match=1
+            for beat in range(0,readbeat):
+                if(rddata[8][beat]!=rddata[i_block][beat]):
+                    is_match=0
+            if (is_match==1):
+                rom_cap = i_block*32
+                #print("Detect wrapped data")
+                break
+    # block 4 mirror
+    if (rom_cap==256):
+        for i_block in range(5,8):
+            is_match=1
+            is_allff=1
+            for beat in range(0,readbeat):
+                if(rddata[4][beat]!=rddata[i_block][beat]):
+                    is_match=0
+                if(rddata[i_block][beat]!=0xffff):
+                    is_allff=0
+            if (is_match==1 or is_allff==1):
+                rom_cap = i_block*32
+                #print("Detect wrapped data")
+                break
+    
+    #print("Detected rom size= %d Mbits"%(rom_cap))
+    return int(rom_cap)
+
+parser = argparse.ArgumentParser(description='N64 dumper')
+parser.add_argument('-f','--force_rom_size',nargs='?',default=0,type=int, help='forced ROM size in Mbits.[default=0] 0: auto detect')
+args = parser.parse_args()
+
+baseAddr = 0x10000000
+
 
 ser = serial.Serial(config.SERIAL_DEVICE,
                     config.SERIAL_BAUDRATE,
                     timeout=config.SERIAL_TIMEOUT_SEC)
 
+rom_size=0
+if (args.force_rom_size==0):
+    rom_size=getROMSize(ser)
+else:
+    rom_size=args.force_rom_size
 
 # get title
 header_title = ""
@@ -120,17 +189,16 @@ header_title=header_title.replace("フ゜","プ")
 header_title=header_title.replace("ヘ゜","ペ")
 header_title=header_title.replace("ホ゜","ポ")
 
-print (header_title)
+print("ROM Title: %s"%(header_title))
+print("ROM Size : %d Mbits"%(rom_size))
 
 outfile=header_title.replace('-','_').replace('/','_').replace('\"','_').replace('\?','_').replace(' ','_').replace("\'","_")+".z64"
 n64f=open((outfile),"wb")
-
-for i_mb in range(0,args.mbits):
+for i_mb in range(0,rom_size):
     ser.write(( "PR%04X" %( (baseAddr>>16)+(i_mb<<1) )).encode())
     print( "PR%04X" %( (baseAddr>>16)+(i_mb<<1) ))
-    for i_data in range(128*1024):
-        #data = int(ser.read(2).decode(),16)
-        data = ser.read(1)
+    for i_data in range(int(128*1024/64)):
+        data = ser.read(64)
         n64f.write(data)
     
 quit()
